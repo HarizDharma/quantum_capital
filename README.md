@@ -1,5 +1,4 @@
 # Quantum Capital — AI Futures Trading Dashboard
-# Quantum Capital Dash App
 
 Institutional‑grade Dash application for AI‑assisted crypto futures trading with a professional hedge‑fund UI, robust caching, and safe offline fallback.
 
@@ -11,12 +10,12 @@ Institutional‑grade Dash application for AI‑assisted crypto futures trading 
 - Export tools: CSV (OHLC + indicators) and PNG (with branding/watermark toggle).
 
 ## Repository Layout
-- `dash_app/`
-  - `app_dash.py` — main Dash app (single‑file application)
-  - `requirements.txt` — Python dependencies
-  - `Makefile` — helper targets for setup, run, checks
-  - `.env.example` — environment template (no secrets)
-  - `README.md` — minimal note pointing to this document
+- `app_dash.py` — main Dash app (single‑file application)
+- `requirements.txt` — Python dependencies
+- `Makefile` — helper targets for setup, run, checks
+- `.env.example` — environment template (no secrets)
+- `.env` — your local environment (ignored by Git; create from example)
+- `README.md` — this file
 
 ## Requirements
 - Python 3.11
@@ -25,7 +24,6 @@ Institutional‑grade Dash application for AI‑assisted crypto futures trading 
 
 ## Quickstart
 1) Create virtualenv and install dependencies
-   - `cd dash_app`
    - `python3.11 -m venv venv`
    - `source venv/bin/activate`
    - `pip install --upgrade pip`
@@ -35,11 +33,12 @@ Institutional‑grade Dash application for AI‑assisted crypto futures trading 
    - Copy `.env.example` to `.env` and fill the following (do not commit `.env`):
      - `BITGET_KEY`, `BITGET_SECRET`, `BITGET_PASSWORD` (optional for live trading/balances)
      - `OPENAI_API_KEY` (optional for AI analysis)
-     - `OPENAI_MODEL` (e.g., `gpt-4o-mini`; if unavailable the app uses heuristics)
+     - `OPENAI_MODEL` — always set via `.env` to a model you have access to (e.g., `gpt-4o-mini`); if not set the app uses heuristics
      - `LIVE_TRADING=false` (recommended while testing)
 
 3) Run the app
    - `make run`
+   - Or directly: `source venv/bin/activate && python app_dash.py`
    - Open `http://127.0.0.1:8050`
 
 Convenience targets
@@ -82,7 +81,7 @@ Convenience targets
 - Bitget (optional)
   - `BITGET_KEY`, `BITGET_SECRET`, `BITGET_PASSWORD`
 - OpenAI (optional)
-  - `OPENAI_API_KEY`, `OPENAI_MODEL` (use an accessible model; e.g., `gpt-4o-mini`)
+  - `OPENAI_API_KEY`, `OPENAI_MODEL` (use an accessible model; e.g., `gpt-4o-mini`). Note: always set `OPENAI_MODEL` in `.env`; do not rely on code defaults.
 - News & refresh
   - `NEWS_ENABLE`, `NEWS_REFRESH_SEC`, `NEWS_MAX_ITEMS`
 - Telemetry
@@ -112,7 +111,13 @@ Convenience targets
 - Internal rate‑limiting for order actions and extended audit trail.
 - Unit/integration tests for indicators/Elliott/signal modules.
 
+## Changelog
+- 2025-09-08
+  - UI: Signal alert moved to header, displayed inline beside `ONLINE • LIVE/PAPER` to keep bottom area clean.
+  - Docs: Updated README and documentation.md to reflect root-level layout, added note to always set `OPENAI_MODEL` in `.env`, and included direct run command.
+  - No changes to trading logic or APIs.
+
 ---
 
 Made by HarizDharma • Quantum Capital
-This folder contains the minimal files to run the Dash app. See README at repository root for usage.
+This repository contains the minimal files to run the Dash app.

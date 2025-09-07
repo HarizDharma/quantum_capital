@@ -4184,20 +4184,21 @@ def resolve_symbol(raw: str) -> str | None:
 # =============================================
 
 def create_logo_header():
-    """Professional hedge fund style logo header."""
+    """Professional hedge fund style logo header, with signal alert beside connection status."""
     return html.Div([
+        # Left: Brand
         html.Div([
-            html.H1("QUANTUM CAPITAL", 
-                   style={
-                       "margin": "0",
-                       "fontSize": "24px",
-                       "fontWeight": "700",
-                       "background": f"linear-gradient(45deg, {COLORS['accent']}, {COLORS['info']})",
-                       "WebkitBackgroundClip": "text",
-                       "WebkitTextFillColor": "transparent",
-                       "letterSpacing": "0.5px"
-                   }),
-            html.P("AI FUTURES TRADING PLATFORM", 
+            html.H1("QUANTUM CAPITAL",
+                    style={
+                        "margin": "0",
+                        "fontSize": "24px",
+                        "fontWeight": "700",
+                        "background": f"linear-gradient(45deg, {COLORS['accent']}, {COLORS['info']})",
+                        "WebkitBackgroundClip": "text",
+                        "WebkitTextFillColor": "transparent",
+                        "letterSpacing": "0.5px"
+                    }),
+            html.P("AI FUTURES TRADING PLATFORM",
                    style={
                        "margin": "0",
                        "fontSize": "11px",
@@ -4206,12 +4207,30 @@ def create_logo_header():
                        "fontWeight": "500"
                    })
         ]),
+        # Right: Connection status + Signal alert inline
         html.Div([
-            html.Div(id="connection-status", children=[
-                html.Span("●", style={"color": COLORS['success'], "fontSize": "16px", "marginRight": "8px"}),
-                html.Span("LIVE", style={"color": COLORS['success'], "fontSize": "12px", "fontWeight": "600"})
-            ], style={"display": "flex", "alignItems": "center"})
-        ])
+            html.Div(
+                id="connection-status",
+                children=[
+                    html.Span("●", style={"color": COLORS['success'], "fontSize": "16px", "marginRight": "8px"}),
+                    html.Span("LIVE", style={"color": COLORS['success'], "fontSize": "12px", "fontWeight": "600"})
+                ],
+                style={"display": "flex", "alignItems": "center"}
+            ),
+            html.Div(
+                id="signal-alert",
+                style={
+                    "display": "none",
+                    "textTransform": "uppercase",
+                    "fontWeight": "700",
+                    "letterSpacing": "1px",
+                    "marginLeft": "12px",
+                    "padding": "6px 10px",
+                    "borderRadius": "6px",
+                    "whiteSpace": "nowrap"
+                }
+            )
+        ], style={"display": "flex", "alignItems": "center"})
     ], style={
         "display": "flex",
         "justifyContent": "space-between",
@@ -4584,14 +4603,7 @@ app.layout = html.Div([
                 create_logo_header(),
                 style=HEADER_STYLE
             ),
-            # Signal alert banner (ephemeral)
-            html.Div(id="signal-alert", style={
-                "margin": "10px 0",
-                "display": "none",
-                "textTransform": "uppercase",
-                "fontWeight": "700",
-                "letterSpacing": "1px"
-            }),
+            # Signal alert moved to header beside connection status
             # Premium metrics dashboard
             html.Div([
                 html.H3("MARKET OVERVIEW", style={
@@ -4917,7 +4929,7 @@ app.clientside_callback(
                 el.style.border = '1px solid rgba(0,255,136,0.3)';
                 setTimeout(()=>{ try{ el.style.display='none'; }catch(e){} }, 2500);
             }
-            return ['BUY SIGNAL', {padding:'6px 10px', borderRadius:'6px'}];
+            return ['BUY SIGNAL', {padding:'6px 10px', borderRadius:'6px', marginLeft:'12px', textTransform:'uppercase', fontWeight:'700', letterSpacing:'1px', whiteSpace:'nowrap', display:'inline-block'}];
         } else if (action === 'SELL') {
             if (el) {
                 el.style.display = 'inline-block';
@@ -4926,9 +4938,9 @@ app.clientside_callback(
                 el.style.border = '1px solid rgba(255,51,102,0.3)';
                 setTimeout(()=>{ try{ el.style.display='none'; }catch(e){} }, 2500);
             }
-            return ['SELL SIGNAL', {padding:'6px 10px', borderRadius:'6px'}];
+            return ['SELL SIGNAL', {padding:'6px 10px', borderRadius:'6px', marginLeft:'12px', textTransform:'uppercase', fontWeight:'700', letterSpacing:'1px', whiteSpace:'nowrap', display:'inline-block'}];
         } else {
-            return ['', {display:'none'}];
+            return ['', {display:'none', marginLeft:'12px'}];
         }
     }
     """,
