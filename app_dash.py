@@ -5406,7 +5406,16 @@ def update_connection_status(n_intervals, trading_mode_value):
     # Determine connectivity: SafeExchange implies offline
     is_online = type(EX).__name__ != "SafeExchange"
     color = COLORS['success'] if is_online else COLORS['danger']
-    label = ("ONLINE" if is_online else "OFFLINE") + (" • LIVE" if live_on else " • PAPER")
+    # Label suffix by trading mode
+    try:
+        mode = (trading_mode_value or "").strip().lower() if trading_mode_value is not None else None
+    except Exception:
+        mode = None
+    if not mode:
+        suffix = " • IDLE"
+    else:
+        suffix = " • LIVE" if live_on else " • PAPER"
+    label = ("ONLINE" if is_online else "OFFLINE") + suffix
     return [
         html.Span("●", style={"color": color, "fontSize": "16px", "marginRight": "8px"}),
         html.Span(label, style={"color": color, "fontSize": "12px", "fontWeight": "600"})
