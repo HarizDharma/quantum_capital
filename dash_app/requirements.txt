@@ -1,7 +1,0 @@
-dash>=2.17
-plotly>=5.22
-ccxt>=4.3.0
-pandas>=2.0
-numpy>=1.24
-python-dotenv>=1.0
-openai>=1.40.0
