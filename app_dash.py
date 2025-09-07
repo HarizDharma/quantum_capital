@@ -4182,7 +4182,7 @@ def place_market_order(symbol: str, side: str, amount: float, reduce_only: bool=
     amount = round_amount(symbol, float(amount))
     if amount <= 0:
         raise ValueError("amount must be > 0")
-    if "on" not in (STATE.get("live_toggle") or []):
+    if not bool(STATE.get("live_on")):
         print(f"[PAPER] {side} {amount} {symbol}")
         try:
             if not reduce_only:
@@ -5320,7 +5320,7 @@ tick_gc()
 )
 def update_connection_status(n_intervals, live_value):
     try:
-        live_on = bool(live_value and ("live" in live_value))
+        live_on = bool(STATE.get("live_on"))
     except Exception:
         live_on = False
     # Determine connectivity: SafeExchange implies offline
@@ -5499,8 +5499,12 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
             STATE["system_health"] = sh
         except Exception:
             pass
-        # Store live mode setting globally
-        STATE["live_toggle"] = live_value or (["on"] if LIVE_TRADING else [])
+        # Store live mode setting globally (unified boolean)
+        try:
+            ui_live = bool(live_value and ("live" in live_value))
+        except Exception:
+            ui_live = False
+        STATE["live_on"] = bool(ui_live and LIVE_TRADING and (type(EX).__name__ != "SafeExchange"))
         
         running = not bool(timer_disabled)
         # arahkan background fetcher dan pastikan aktif
@@ -5954,15 +5958,34 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
                             STATE["pos"] = None
                     except Exception:
                         pass
-    
-                    hit_tp = (last_price >= tp_val) if pos["side"] == "long" else (last_price <= tp_val)
-                    hit_sl = (last_price <= sl_val) if pos["side"] == "long" else (last_price >= sl_val)
-                    opp_signal = (conf >= max(ENTRY_CONF+10, 70)) and ((action == "SELL" and pos["side"] == "long") or (action == "BUY" and pos["side"] == "short"))
-                    if hit_tp or hit_sl or opp_signal:
-                        od2 = close_position_market(symbol, pos)
-                        if od2.get("status") != "error":
-                            pos = None
-                            STATE["pos"] = None
+
+                    # Exit checks only if position still exists and tp/sl available
+                    if pos is not None:
+                        try:
+                            tp_val = pos.get("tp")
+                            sl_val = pos.get("sl")
+                            tp_ok = (tp_val is not None) and np.isfinite(float(tp_val))
+                            sl_ok = (sl_val is not None) and np.isfinite(float(sl_val))
+                        except Exception:
+                            tp_ok = sl_ok = False
+
+                        if tp_ok and sl_ok:
+                            hit_tp = (last_price >= tp_val) if pos["side"] == "long" else (last_price <= tp_val)
+                            hit_sl = (last_price <= sl_val) if pos["side"] == "long" else (last_price >= sl_val)
+                        else:
+                            hit_tp = hit_sl = False
+
+                        opp_signal = False
+                        try:
+                            opp_signal = (conf >= max(ENTRY_CONF+10, 70)) and ((action == "SELL" and pos["side"] == "long") or (action == "BUY" and pos["side"] == "short"))
+                        except Exception:
+                            opp_signal = False
+
+                        if hit_tp or hit_sl or opp_signal:
+                            od2 = close_position_market(symbol, pos)
+                            if od2.get("status") != "error":
+                                pos = None
+                                STATE["pos"] = None
             except Exception as e:
                 print(f"[TRADE] exit error: {e}")
         else:
