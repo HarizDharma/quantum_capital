@@ -170,6 +170,136 @@ Convenience targets
   - `server.log` — recent server output (optional)
   - `venv/` — local virtual environment
 
+## Project Logic Structure
+- Config & Env
+  - Loads `.env` via `python-dotenv`; all runtime knobs controlled by env (AI, thresholds, risk, performance).
+  - Constants for thresholds (confidence/RR per TF), ATR gates, news gates, and orchestrator settings.
+
+- Logging & Telemetry
+  - `setup_quantum_logging()` configures console/file loggers and error logs.
+  - `health_record()` tracks last/EMA latency per subsystem; exposed in System Health.
+
+- Global State & Caches
+  - `STATE`: app‑level dictionary for UI state (positions, ai_cache, system_health, etc.).
+  - Caches: `CACHE` (OHLCV), `TICKER_CACHE`, `POS_CACHE`, `fig_cache`, `ob_cache`, `ai_cache`.
+
+- Exchange Layer
+  - `EX` from `ccxt` (Bitget) for ticker, OHLCV, balance, positions, orders.
+  - `SafeExchange` fallback for offline operation (UI remains functional).
+
+- Data Pipeline
+  - `fetch_ohlcv_bitget_raw()` → low‑level fetch; `fetch_initial_bars()` and `fetch_incremental_bars()` for backfill/incremental.
+  - `fetch_ohlcv_df()` merges, dedups, downcasts, and caches; `ensure_clean_tf_df()` enforces TF freshness and min bars.
+
+- Indicators & Features
+  - `compute_indicators()` builds EMA/RSI/MACD/Stoch/BB/VWAP/OBV, etc.
+  - `swing_levels()`, `atr_*()` and pattern helpers; OB zones via `get_ob_zones_cached()`.
+
+- AI Layer
+  - Orchestrator `AIOrchestrator`: provider rotation (OpenAI→Gemini→Grok), basic RPM/TPM gating, concurrency guard, cooldown on 429, JSON/text unification.
+  - AI calls unified through `AI.call_chat()`; functions: `analyze_news_pulse_with_ai()`, `ai_explain()`, `ai_predict_target()`, `ai_decide_scale_plan()`.
+  - Cache per candle for AI text/targets; news analyzed on interval (`ensure_news_fetcher()`).
+
+- Signal Engine (Fine‑Tuned)
+  - Direction heuristics: `ai_predict_direction()` (vol‑normalized scores).
+  - Core decision: `simple_signal()` with HTF bias, ATR S/R proximity, breakout/fakeout, oscillator/trend votes.
+  - Fine‑tuning gates: ATR proximity blocks (avoid buy into resistance / sell into support), news‑aware gating (crypto sentiment, rate bias).
+  - Confidence: blended heuristic + logistic‑calibrated confidence; HTF bonus; dynamic per‑TF minimum confidence.
+  - Targets: `derive_tp_sl_mtf()` and `derive_tp_sl()` (ATR/structure), minimum RR per TF.
+
+- Execution & Risk
+  - Entry path in main callback: sizing (`choose_leverage()`, `compute_notional_usdt_enhanced()`), `place_market_order()`.
+  - Post‑entry: ensure TP/SL, trailing stop, partial TP (ROE steps), and audit (`perf_*()` utils, `compute_roe()`).
+  - Circuit breakers in practice: gates + thresholds avoid low‑quality entries; AI layer cooldown when rate‑limited.
+
+- UI & Callbacks
+  - Components: `create_logo_header()`, sidebar, metric cards, chart builder.
+  - Clientside alert shows BUY/SELL beside ONLINE • LIVE/PAPER.
+  - Server callbacks: `refresh_dashboard()` (core loop), `update_connection_status()`, `update_health()`, CSV export.
+
+- Background Workers
+  - `ensure_bg_fetcher()` for market data refresh; `ensure_news_fetcher()` for news pulse and AI analysis.
+
+- Caching Strategy
+  - Disk caches for OHLCV; in‑memory caches for figures/OB/AI. AI caches keyed by `(symbol, tf, last_candle_ts, kind)`.
+
+- Tick Sequence (High‑Level)
+  - Timer tick → heartbeat + live toggle → position detection.
+  - Load/refresh OHLCV → compute indicators/OB → compute S/R + ATR proximity.
+  - AI target (cached per candle) → `simple_signal()` (with TF/news gates) → derive TP/SL & RR plan.
+  - If allowed and gates pass: size order → place order → ensure TP/SL/trailing.
+  - Build chart/tiles → update AI explanation (cached) → update System Health/metrics.
+
+## Flow Diagrams
+
+Dashboard Tick Flow
+```
+[Timer/Inputs]
+      |
+      v
+[Heartbeat + Live toggle + Position detect]
+      |
+      v
+[Fetch/Refresh OHLCV + Cache] --(stale/backfill)--> [Merged OHLCV]
+      |
+      v
+[Compute Indicators + OB zones]
+      |
+      v
+[S/R (LTF+HTF) + ATR proximity]
+      |
+      +--> [AI Target (per‑candle cache)]
+      |
+      v
+[simple_signal(): votes + breakout/fakeout + HTF bias]
+      |
+      v
+[Calibrated Confidence (logistic blend) + Gates]
+  (ATR‑level blocks, news sentiment/rate bias,
+   per‑TF CONF/RR thresholds)
+      |
+      v
+[Decision]  -> HOLD ───────────────┐
+   | BUY/SELL (no position)        |
+   v                               |
+[Size & Leverage]                  |
+   |                               |
+   v                               |
+[Place Order]                      |
+   |                               |
+   v                               |
+[Ensure TP/SL + Trailing + Partial TP]
+      |
+      v
+[Build Chart & Tiles + AI Explain (cache)]
+      |
+      v
+[Update System Health + Caches]
+```
+
+AI Orchestrator Flow (OpenAI → Gemini → Grok)
+```
+[Messages + mode(json/text) + max_tokens]
+      |
+      v
+[Estimate tokens]
+      |
+      v
+[For provider in AI_PROVIDER_ORDER]
+   |  Check: key present, cooldown elapsed
+   |  Reset minute window; check RPM/TPM headroom
+   |  Try acquire concurrency semaphore
+   |   |
+   |   +--> Call provider API
+   |          - OpenAI client
+   |          - Grok via OpenAI client (base_url x.ai)
+   |          - Gemini REST (generateContent)
+   |        On success: bump rpm/tpm, update System Health, return text
+   |        On error/429: parse Retry‑After → set cooldown → release semaphore → try next
+   |
+   └── If none eligible/succeed → raise (fallback to heuristics where used)
+```
+
 ## Fine‑Tuning & Execution (Compact Plan)
 - Objectives
   - Tingkatkan akurasi sinyal entry, kurangi false positive, dan minimalkan slippage saat eksekusi.

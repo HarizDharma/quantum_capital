@@ -76,6 +76,16 @@ Convenience targets
 - State & Caches: managed by a state manager with persistence for light state, in‑memory caches for heavy objects.
 - System Health: latency telemetry (EMA) per subsystem, connection status, cache sizes, background thread states.
 
+Flow (High‑Level)
+```
+Timer → Position detect → OHLCV refresh → Indicators/OB → S/R + ATR
+   → AI Target (cached per candle)
+   → simple_signal() + calibrated confidence + gates (ATR level, news, per‑TF)
+   → Decision (BUY/SELL/HOLD)
+   → If BUY/SELL (no pos): Size&Leverage → Order → TP/SL/Trailing
+   → Build chart/tiles + AI Explain (cache) → System Health update
+```
+
 ## Offline‑Safe Operation
 - Without credentials or network, the app automatically uses a SafeExchange stub:
   - UI and callbacks still render
