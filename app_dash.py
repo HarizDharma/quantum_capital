@@ -5244,12 +5244,20 @@ def update_health(_n):
         obc = len(STATE.get("ob_cache", {}) or {})
         tickc = len(TICKER_CACHE or {})
 
+        # AI usage snapshot (if any)
+        ai_prov = sh.get('ai_provider') or '—'
+        oa_rpm = sh.get('ai_openai_rpm'); oa_tpm = sh.get('ai_openai_tpm')
+        gm_rpm = sh.get('ai_gemini_rpm');  gm_tpm = sh.get('ai_gemini_tpm')
+        gk_rpm = sh.get('ai_grok_rpm');    gk_tpm = sh.get('ai_grok_tpm')
+
         lines = [
             f"Connection: {conn}",
             f"Last Update: {last_txt}",
             f"API Errors: {api_err}",
             f"BG Fetcher: {'alive' if bg else 'idle'} | News: {'alive' if news else 'idle'}",
             f"Cache: main={cache_len} fig={figc} ob={obc} tickers={tickc}",
+            f"AI Provider: {ai_prov}",
+            f"AI rpm/tpm: OpenAI={oa_rpm or 0}/{oa_tpm or 0} Gemini={gm_rpm or 0}/{gm_tpm or 0} Grok={gk_rpm or 0}/{gk_tpm or 0}",
             # Latency metrics (EMA): show last and avg if available
             *([f"OHLCV ms: last={sh.get('ohlcv_ms_last', '—'):.0f} avg={sh.get('ohlcv_ms_avg', '—'):.0f}"] if isinstance(sh.get('ohlcv_ms_last'), (int,float)) else []),
             *([f"Ticker ms: last={sh.get('ticker_ms_last', '—'):.0f} avg={sh.get('ticker_ms_avg', '—'):.0f}"] if isinstance(sh.get('ticker_ms_last'), (int,float)) else []),
