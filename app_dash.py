@@ -667,6 +667,38 @@ OB_SOFT = True  # keep True to use OB as confidence feature
 OB_PAD_ATR = float(os.getenv("OB_PAD_ATR", "0.30"))  # pad around OB zone in ATR units
 OB_BONUS = int(os.getenv("OB_BONUS", "8"))           # +/- confidence points when near an OB
 
+# --- Fine-Tuning knobs (gating, calibration, dynamic thresholds) ---
+FT_BLOCK_NEAR_RES_ATR_BUY  = float(os.getenv("FT_BLOCK_NEAR_RES_ATR_BUY", "0.40"))  # block BUY if resistance is nearer than this ATR
+FT_BLOCK_NEAR_SUP_ATR_SELL = float(os.getenv("FT_BLOCK_NEAR_SUP_ATR_SELL", "0.40")) # block SELL if support is nearer than this ATR
+
+# News gating (crypto sentiment)
+FT_NEWS_LONG_MIN  = float(os.getenv("FT_NEWS_LONG_MIN", "-0.15"))  # block BUY if crypto_sent < this
+FT_NEWS_SHORT_MAX = float(os.getenv("FT_NEWS_SHORT_MAX", "0.15"))   # block SELL if crypto_sent > this
+FT_RATE_HIKE_BLOCKS_LONG = os.getenv("FT_RATE_HIKE_BLOCKS_LONG", "true").lower() in ("1","true","yes","on")
+FT_RATE_CUT_BLOCKS_SHORT = os.getenv("FT_RATE_CUT_BLOCKS_SHORT", "true").lower() in ("1","true","yes","on")
+
+# Confidence calibration (logistic)
+FT_CONF_W0 = float(os.getenv("FT_CONF_W0", "-0.20"))
+FT_CONF_W1 = float(os.getenv("FT_CONF_W1", "2.20"))   # (p_up-0.5)*2
+FT_CONF_W2 = float(os.getenv("FT_CONF_W2", "1.20"))   # adx_norm
+FT_CONF_W3 = float(os.getenv("FT_CONF_W3", "0.80"))   # trend_factor
+
+# Dynamic thresholds per timeframe (fallback ke ENTRY_CONF & RR 2.5)
+ENTRY_CONF_1M  = int(os.getenv("ENTRY_CONF_1M",  str(os.getenv("ENTRY_CONF","75"))))
+ENTRY_CONF_5M  = int(os.getenv("ENTRY_CONF_5M",  str(os.getenv("ENTRY_CONF","75"))))
+ENTRY_CONF_15M = int(os.getenv("ENTRY_CONF_15M", str(os.getenv("ENTRY_CONF","75"))))
+ENTRY_CONF_1H  = int(os.getenv("ENTRY_CONF_1H",  str(os.getenv("ENTRY_CONF","75"))))
+ENTRY_CONF_4H  = int(os.getenv("ENTRY_CONF_4H",  str(os.getenv("ENTRY_CONF","75"))))
+ENTRY_CONF_1D  = int(os.getenv("ENTRY_CONF_1D",  str(os.getenv("ENTRY_CONF","75"))))
+
+RR_MIN_DEFAULT = float(os.getenv("RR_MIN_DEFAULT", "2.5"))
+RR_MIN_1M  = float(os.getenv("RR_MIN_1M",  str(RR_MIN_DEFAULT)))
+RR_MIN_5M  = float(os.getenv("RR_MIN_5M",  str(RR_MIN_DEFAULT)))
+RR_MIN_15M = float(os.getenv("RR_MIN_15M", str(max(2.2, RR_MIN_DEFAULT-0.3))))
+RR_MIN_1H  = float(os.getenv("RR_MIN_1H",  str(max(2.0, RR_MIN_DEFAULT-0.5))))
+RR_MIN_4H  = float(os.getenv("RR_MIN_4H",  str(max(1.8, RR_MIN_DEFAULT-0.7))))
+RR_MIN_1D  = float(os.getenv("RR_MIN_1D",  str(max(1.6, RR_MIN_DEFAULT-0.9))))
+
 # runtime state (in-memory)
 # Enhanced state management with persistence and error recovery
 class QuantumStateManager:
@@ -3229,7 +3261,37 @@ def build_optimized_chart(di: pd.DataFrame, pos: dict | None, ob_zones: list, sy
 build_clean_chart = build_optimized_chart
 
 # Strengthened signal with HTF bias and ATR-based S/R proximity
-def simple_signal(d: pd.DataFrame, htf_bias: str = "flat", near_sup_atr: float = 1e9, near_res_atr: float = 1e9):
+def _sigmoid(x: float) -> float:
+    try:
+        import math
+        return 1.0 / (1.0 + math.exp(-float(x)))
+    except Exception:
+        return 0.5
+
+def _conf_calibrated(p_up: float, adx_norm: float, trend_factor: float) -> float:
+    """Logistic-calibrated confidence 0..100 based on core features."""
+    try:
+        x = float(FT_CONF_W0) + float(FT_CONF_W1) * float((p_up - 0.5) * 2.0) + float(FT_CONF_W2) * float(adx_norm) + float(FT_CONF_W3) * float(trend_factor)
+        return 100.0 * _sigmoid(x)
+    except Exception:
+        return 50.0
+
+def _tf_conf_min(tf: str) -> int:
+    m = (tf or '').lower()
+    return {
+        '1m': ENTRY_CONF_1M, '5m': ENTRY_CONF_5M, '15m': ENTRY_CONF_15M,
+        '1h': ENTRY_CONF_1H, '4h': ENTRY_CONF_4H, '1d': ENTRY_CONF_1D
+    }.get(m, ENTRY_CONF)
+
+def _tf_rr_min(tf: str) -> float:
+    m = (tf or '').lower()
+    return {
+        '1m': RR_MIN_1M, '5m': RR_MIN_5M, '15m': RR_MIN_15M,
+        '1h': RR_MIN_1H, '4h': RR_MIN_4H, '1d': RR_MIN_1D
+    }.get(m, RR_MIN_DEFAULT)
+
+# Strengthened signal with HTF bias and ATR-based S/R proximity + news-aware gating + calibrated confidence
+def simple_signal(d: pd.DataFrame, htf_bias: str = "flat", near_sup_atr: float = 1e9, near_res_atr: float = 1e9, tf: str | None = None, news: dict | None = None):
     last = d.iloc[-1]
     reasons = []
 
@@ -3330,7 +3392,7 @@ def simple_signal(d: pd.DataFrame, htf_bias: str = "flat", near_sup_atr: float =
     adx_val = float(last.get("adx", np.nan))
     adx_ok = (np.isfinite(adx_val) and adx_val >= adx_gate)
 
-    # Decision
+    # Decision (pre-gate)
     action = "HOLD"
     if score > 0.15:
         if (p_up >= p_up_buy_gate) and adx_ok and (brk_up or near_sup_atr < 0.6 or last["close"] > last.get("bb_mid", last["close"])) and not fake_up:
@@ -3343,7 +3405,7 @@ def simple_signal(d: pd.DataFrame, htf_bias: str = "flat", near_sup_atr: float =
         else:
             reasons.append(f"Blocked SELL: p_up={p_up:.2f}, ADX={adx_val:.1f}, fake_dn={fake_dn}")
 
-    # Confidence (masukkan drawdown & risk aversion) — boosted for trend alignment (helps 1H trending up reach ≥70%)
+    # Confidence (masukkan drawdown & risk aversion) — boosted for trend alignment
     conf_raw = float(abs(score))
     adx_norm = 0.0 if not np.isfinite(adx_val) else min(1.0, max(0.0, (adx_val - 10.0) / 35.0))
 
@@ -3367,15 +3429,40 @@ def simple_signal(d: pd.DataFrame, htf_bias: str = "flat", near_sup_atr: float =
     # Small bonus if HTF bias matches the action
     htf_bonus = 0.05 if ((action == "BUY" and htf_bias == "bull") or (action == "SELL" and htf_bias == "bear")) else 0.0
 
-    # Re-weight confidence to include trend_factor and htf_bonus
-    conf = 100 * min(
-        1.0,
-        0.30 * conf_raw +
-        0.35 * abs(p_up - 0.5) * 2.0 +
-        0.20 * adx_norm +
-        0.15 * float(trend_factor) +
-        float(htf_bonus)
-    )
+    # Two-channel confidence: (1) heuristic blend, (2) calibrated logistic, then average with HTF bonus
+    conf_blend = 100 * min(1.0, 0.30*conf_raw + 0.35*abs(p_up-0.5)*2.0 + 0.20*adx_norm + 0.15*float(trend_factor))
+    conf_cal   = _conf_calibrated(p_up, adx_norm, float(trend_factor))
+    conf = min(100, max(0, (0.5*conf_blend + 0.5*conf_cal + 100.0*float(htf_bonus))))
+
+    # Hard gates near opposite levels to avoid buying into resistance or selling into support
+    if action == 'BUY' and near_res_atr < FT_BLOCK_NEAR_RES_ATR_BUY:
+        reasons.append(f"Gate: too close to resistance ({near_res_atr:.2f} ATR < {FT_BLOCK_NEAR_RES_ATR_BUY}) → HOLD")
+        action = 'HOLD'
+    if action == 'SELL' and near_sup_atr < FT_BLOCK_NEAR_SUP_ATR_SELL:
+        reasons.append(f"Gate: too close to support ({near_sup_atr:.2f} ATR < {FT_BLOCK_NEAR_SUP_ATR_SELL}) → HOLD")
+        action = 'HOLD'
+
+    # News-aware gates (if available)
+    try:
+        if news and isinstance(news, dict):
+            cs = float(news.get('crypto_sent', 0.0))
+            rb = str(news.get('rate_bias', 'uncertain'))
+            if action == 'BUY':
+                if cs < FT_NEWS_LONG_MIN:
+                    reasons.append(f"Gate: crypto_sent {cs:.2f} < {FT_NEWS_LONG_MIN:.2f} → HOLD long")
+                    action = 'HOLD'
+                if FT_RATE_HIKE_BLOCKS_LONG and rb == 'hike':
+                    reasons.append("Gate: rate bias=hike blocks long → HOLD")
+                    action = 'HOLD'
+            elif action == 'SELL':
+                if cs > FT_NEWS_SHORT_MAX:
+                    reasons.append(f"Gate: crypto_sent {cs:.2f} > {FT_NEWS_SHORT_MAX:.2f} → HOLD short")
+                    action = 'HOLD'
+                if FT_RATE_CUT_BLOCKS_SHORT and rb == 'cut':
+                    reasons.append("Gate: rate bias=cut blocks short → HOLD")
+                    action = 'HOLD'
+    except Exception:
+        pass
 
     # Tambahkan snapshot performa (winrate & DD) ke alasan
     ps = perf_snapshot()
@@ -3385,6 +3472,9 @@ def simple_signal(d: pd.DataFrame, htf_bias: str = "flat", near_sup_atr: float =
         f"DD={ps['drawdown_pct']:.1f}%"
     )
 
+    # Include TF thresholds snapshot for audit
+    if tf:
+        reasons.append(f"TF gates: conf>={_tf_conf_min(tf)} RR>={_tf_rr_min(tf):.2f}")
     return action, int(round(conf)), "; ".join(reasons), float(score)
 
 
@@ -5588,7 +5678,7 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
         # subset khusus plotting (lebih ringan), logika tetap pakai 'di' penuh
         vis = di.tail(PLOT_BARS).copy()
     
-        action, conf, reason, score = simple_signal(di, htf_bias, near_sup_atr, near_res_atr)
+        action, conf, reason, score = simple_signal(di, htf_bias, near_sup_atr, near_res_atr, tf=tf, news=news)
         # OB as soft feature → adjust confidence only (no gating)
         if OB_SOFT:
             ob_long_ok, _zL = near_order_block(last_price, "long",  ob_zones, _atr_val, pad_atr=OB_PAD_ATR)
@@ -5656,7 +5746,10 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
     
         if allow_trade:
             try:
-                if pos is None and conf >= ENTRY_CONF and action in ("BUY","SELL"):
+                # Dynamic per‑TF gates
+                CONF_MIN = _tf_conf_min(tf)
+                RR_MIN   = _tf_rr_min(tf)
+                if pos is None and conf >= CONF_MIN and action in ("BUY","SELL"):
                     side = "long" if action == "BUY" else "short"
                     # Enhanced leverage selection & notional sizing with risk management
                     lev_use = choose_leverage(symbol, tf, di)
@@ -5664,8 +5757,8 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
                     amt = max(1e-8, notional / max(1e-12, last_price))
                     tp, sl, rr_plan = derive_tp_sl_mtf(di, hti, side, tf)
                     # Gate on minimum RR so entry is only at strong locations
-                    if rr_plan is None or rr_plan < 2.5:
-                        raise Exception("RR below 2.5:1 threshold for 80% win rate target; skip entry")
+                    if rr_plan is None or rr_plan < RR_MIN:
+                        raise Exception(f"RR below {RR_MIN:.2f}:1 threshold; skip entry")
                     od = place_market_order(symbol, side, amt, reduce_only=False, lev=lev_use)
                     if od.get("status") != "error":
                         r0 = abs(float(last_price) - float(sl))
