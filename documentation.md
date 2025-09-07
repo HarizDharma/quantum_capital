@@ -93,6 +93,62 @@ Convenience targets
 - Control chart density via `PLOT_BARS`.
 - Aggressive caches pruning and periodic GC are enabled in the app.
 
+## AI Orchestrator (Compact Spec)
+- Goals
+  - Patuh limit RPM/TPM per provider+model, tetap terasa real‑time, output konsisten, dan compliant ToS.
+  - Adaptif timeframe (1m/5m/15m+), rotasi otomatis lintas provider (OpenAI, Gemini, Grok), dan degradasi elegan.
+
+- Providers & Models
+  - OpenAI: fast `gpt-4o-mini` (default real‑time), deep `gpt-4o` (laporan terjadwal/eskalasi).
+  - Gemini: fast `gemini-1.5-flash` (fallback/rotasi; free‑tier friendly), deep `gemini-2.5-pro`/`1.5-pro` (terjadwal/eskalasi).
+  - Grok: fast/tertiary `grok-4-latest` (rotasi/fallback), opsional untuk deep eskalasi terbatas.
+
+- Routing & Rotation
+  - Urutan provider dibaca dari `AI_PROVIDER_ORDER` (default: `openai,gemini,grok`).
+  - Fast lane (real‑time): pilih model cepat/hemat; Deep lane: hanya saat ambiguitas tinggi/event besar/terjadwal.
+  - Headroom 10–20%: hentikan sebelum menyentuh limit keras; hindari oscillation dengan cool‑down per provider.
+
+- Rate Limits, Concurrency, Backoff
+  - Token‑bucket ganda per provider+model: satu untuk RPM, satu untuk TPM; concurrency guard per model.
+  - Estimasi token: `prompt_tokens + max_output_tokens` dipakai untuk pacing TPM.
+  - Retry 429/5xx: exponential backoff + jitter, hormati `Retry-After`; circuit breaker (open → half‑open → closed).
+
+- Timeframe‑Aware Scheduling
+  - 1m: trigger saat candle baru/perubahan signifikan; debounce 300–500 ms; batas 1 panggilan/menit per simbol; Deep lane: nonaktif.
+  - 5m/15m+: trigger pada open/close candle; Deep lane diizinkan saat event besar (news/ATR spike) atau ambiguitas tinggi.
+  - Cancel stale: batalkan request lama saat datang candle/input baru.
+
+- Output Contract (JSON, lintas provider)
+  - Fields: `decision` (long|short|flat|none), `target_price` (opsional), `rationale_bullets` (≤5), `risk_flags` (array), `confidence_explained` (singkat), `version`.
+  - Batas output: fast lane ≤ 120 tokens; deep lane lebih panjang namun jarang/terjadwal.
+
+- Caching & Deduplication
+  - Cache key: `(symbol, timeframe, last_candle_ts, model_class, prompt_hash)`; TTL ≈ panjang timeframe.
+  - Dedup: gabungkan permintaan identik yang sedang berjalan; Cancel: hentikan job yang menjadi stale.
+
+- Degradation & Fallback Order
+  - Kecilkan `max_output_tokens` → gunakan cache → rotasi provider (sesuai `AI_PROVIDER_ORDER`) → heuristik lokal.
+
+- Telemetry & Ops
+  - Metrik per provider+model: requests/min, tokens/min, 429 rate, latency, status circuit, ETA reset.
+  - Panel System Health menampilkan provider aktif, alasan fallback/eskalasi, dan sisa kapasitas perkiraan.
+
+- Security
+  - Simpan kunci di `.env`; jangan tempel di log/chat. Rotasi kunci yang terekspos.
+
+- Configuration (.env)
+  - Routing: `AI_PROVIDER_ORDER=openai,gemini,grok`
+  - OpenAI: `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-4o-mini`, `OPENAI_MAX_RPM`, `OPENAI_MAX_TPM`, `OPENAI_MAX_CONCURRENCY`
+  - Gemini: `GEMINI_API_KEY`, `GEMINI_MODEL=gemini-1.5-flash`, `GEMINI_MAX_RPM`, `GEMINI_MAX_TPM`, `GEMINI_MAX_CONCURRENCY`
+  - Grok: `GROK_API_KEY`, `GROK_MODEL=grok-4-latest`, `GROK_MAX_RPM`, `GROK_MAX_TPM`, `GROK_MAX_CONCURRENCY`
+  - Timeframe & tokens: `AI_MIN_INTERVAL_1M=60`, `AI_MIN_INTERVAL_5M=300`, `AI_MIN_INTERVAL_15M=900`, `AI_DEBOUNCE_MS=400`, `AI_MAX_TOKENS_FAST=256`, `AI_MAX_TOKENS_DEEP=768`
+  - Catatan: selalu set `OPENAI_MODEL` via `.env`; isi nilai RPM/TPM sesuai kuota nyata, mulai konservatif dan kalibrasi dari telemetry/error header.
+
+- Implementation Plan (Non‑coding)
+  - Rancang “AI Orchestrator” (limiter RPM/TPM, queue, concurrency guard, circuit breaker, routing).
+  - Scheduler adaptif timeframe + debounce + cancel stale + cache; samakan skema output JSON lintas provider.
+  - QA: simulasi 429/Retry‑After, uji 1m/5m/15m, failover OpenAI↔Gemini↔Grok, dan verifikasi metrik di System Health.
+
 ## Troubleshooting
 - Port in use: “Port 8050 is in use” → stop the previous server (`pkill -f app_dash.py`) or run on a different port.
 - OpenAI model error: 404 “model not found” → set `OPENAI_MODEL` you have access to (e.g., `gpt-4o-mini`) or leave blank to use heuristics.

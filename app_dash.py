@@ -154,6 +154,237 @@ LOCAL_TZ = ZoneInfo("Asia/Jakarta")  # WIB Indonesia untuk Bitget exchange
 
 from dash import Dash, html, dcc, Input, Output, State, no_update, ctx
 from dash.dependencies import ClientsideFunction
+
+# ==============================
+# AI Orchestrator (multi-provider)
+# ==============================
+class AIOrchestrator:
+    def __init__(self):
+        self.order = [p.strip() for p in (AI_PROVIDER_ORDER or "").split(',') if p.strip()]
+        # Per-provider rolling minute windows for RPM/TPM
+        now = time.time()
+        self.state = {
+            'openai': {'rpm': 0, 'tpm': 0, 'win': now, 'cooldown_until': 0.0},
+            'gemini': {'rpm': 0, 'tpm': 0, 'win': now, 'cooldown_until': 0.0},
+            'grok':   {'rpm': 0, 'tpm': 0, 'win': now, 'cooldown_until': 0.0},
+        }
+        self.reserve_rpm = 1   # minimal headroom
+        self.reserve_tpm = 128 # minimal token headroom
+        # Lazy clients
+        self._oa = None
+        self._grok = None
+
+    def available(self) -> bool:
+        # Any provider with API key configured
+        if OPENAI_API_KEY: return True
+        if GEMINI_API_KEY: return True
+        if GROK_API_KEY: return True
+        return False
+
+    def _reset_window_if_needed(self, prov: str):
+        st = self.state[prov]
+        now = time.time()
+        if now - st['win'] >= 60.0:
+            st['rpm'] = 0
+            st['tpm'] = 0
+            st['win'] = now
+
+    def _limits(self, prov: str):
+        if prov == 'openai':
+            return OPENAI_MAX_RPM, OPENAI_MAX_TPM
+        if prov == 'gemini':
+            return GEMINI_MAX_RPM, GEMINI_MAX_TPM
+        if prov == 'grok':
+            return GROK_MAX_RPM, GROK_MAX_TPM
+        return 0, 0
+
+    def _eligible(self, prov: str, est_tokens: int) -> bool:
+        # Cooldown?
+        if time.time() < self.state[prov]['cooldown_until']:
+            return False
+        self._reset_window_if_needed(prov)
+        rpm_cap, tpm_cap = self._limits(prov)
+        st = self.state[prov]
+        # If no caps configured, treat as eligible
+        if rpm_cap <= 0 and tpm_cap <= 0:
+            return True
+        if rpm_cap > 0 and (st['rpm'] + 1 > max(1, rpm_cap - self.reserve_rpm)):
+            return False
+        if tpm_cap > 0 and (st['tpm'] + est_tokens > max(1, tpm_cap - self.reserve_tpm)):
+            return False
+        return True
+
+    def _bump_usage(self, prov: str, est_tokens: int):
+        st = self.state[prov]
+        st['rpm'] += 1
+        st['tpm'] += max(0, int(est_tokens))
+        # Update system health snapshot
+        try:
+            sh = STATE.get('system_health', {}) or {}
+            sh['ai_provider'] = prov
+            sh[f'ai_{prov}_rpm'] = st['rpm']
+            sh[f'ai_{prov}_tpm'] = st['tpm']
+            STATE['system_health'] = sh
+        except Exception:
+            pass
+
+    def _cooldown(self, prov: str, retry_after_sec: float | None = None):
+        # backoff default 20s if not provided
+        self.state[prov]['cooldown_until'] = time.time() + float(retry_after_sec or 20.0)
+
+    def _estimate_tokens(self, messages: list[dict], max_tokens: int) -> int:
+        # Rough heuristic: ~4 chars per token
+        total_chars = 0
+        for m in messages or []:
+            c = m.get('content')
+            if isinstance(c, str):
+                total_chars += len(c)
+            elif isinstance(c, (list, tuple)):
+                for part in c:
+                    if isinstance(part, str):
+                        total_chars += len(part)
+        prompt_tokens = max(1, total_chars // 4)
+        return prompt_tokens + int(max_tokens or 0)
+
+    def call_chat(self, messages: list[dict], *, mode: str = 'text', lane: str = 'fast', max_tokens: int = 256, temperature: float = 0.2) -> str:
+        """Route chat to the first eligible provider; return text.
+        mode: 'text' or 'json' (will try to enforce JSON when possible).
+        lane: 'fast' or 'deep' (unused now, reserved for policy),
+        """
+        est = self._estimate_tokens(messages, max_tokens)
+        last_err = None
+        started = time.time()
+        for prov in self.order:
+            if prov == 'openai' and not OPENAI_API_KEY: 
+                continue
+            if prov == 'gemini' and not GEMINI_API_KEY:
+                continue
+            if prov == 'grok' and not GROK_API_KEY:
+                continue
+            if not self._eligible(prov, est):
+                continue
+            try:
+                if prov == 'openai':
+                    txt = self._call_openai(messages, mode=mode, max_tokens=max_tokens, temperature=temperature)
+                elif prov == 'grok':
+                    txt = self._call_grok(messages, mode=mode, max_tokens=max_tokens, temperature=temperature)
+                elif prov == 'gemini':
+                    txt = self._call_gemini(messages, mode=mode, max_tokens=max_tokens, temperature=temperature)
+                else:
+                    continue
+                self._bump_usage(prov, est)
+                try:
+                    health_record('ai', (time.time() - started) * 1000.0)
+                except Exception:
+                    pass
+                return txt
+            except Exception as e:
+                last_err = e
+                # Parse Retry-After for cooldown if available
+                ra = None
+                try:
+                    ra = float(getattr(e, 'retry_after', None) or 0)
+                except Exception:
+                    ra = None
+                self._cooldown(prov, ra)
+                continue
+        if last_err:
+            raise last_err
+        raise RuntimeError('No eligible AI provider available')
+
+    def _call_openai(self, messages, *, mode: str, max_tokens: int, temperature: float) -> str:
+        from openai import OpenAI
+        if self._oa is None:
+            self._oa = OpenAI(api_key=OPENAI_API_KEY, timeout=15.0, max_retries=1)
+        kwargs = {
+            'model': OPENAI_MODEL,
+            'messages': messages,
+            'temperature': float(temperature),
+            'max_tokens': int(max_tokens),
+        }
+        if mode == 'json':
+            kwargs['response_format'] = {'type': 'json_object'}
+        rsp = self._oa.chat.completions.create(**kwargs)
+        return (rsp.choices[0].message.content or '').strip()
+
+    def _call_grok(self, messages, *, mode: str, max_tokens: int, temperature: float) -> str:
+        from openai import OpenAI
+        if self._grok is None:
+            # xAI OpenAI-compatible endpoint
+            self._grok = OpenAI(api_key=GROK_API_KEY, base_url='https://api.x.ai/v1', timeout=15.0, max_retries=1)
+        kwargs = {
+            'model': GROK_MODEL,
+            'messages': messages,
+            'temperature': float(temperature),
+            'max_tokens': int(max_tokens),
+        }
+        if mode == 'json':
+            kwargs['response_format'] = {'type': 'json_object'}
+        rsp = self._grok.chat.completions.create(**kwargs)
+        return (rsp.choices[0].message.content or '').strip()
+
+    def _call_gemini(self, messages, *, mode: str, max_tokens: int, temperature: float) -> str:
+        # Minimal REST call to Google Generative Language API (v1beta)
+        # We merge system+user into a single text for simplicity.
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        sys_parts = []
+        usr_parts = []
+        for m in messages:
+            role = m.get('role')
+            content = m.get('content')
+            if isinstance(content, list):
+                content = "\n".join(str(x) for x in content)
+            if role == 'system':
+                sys_parts.append(str(content))
+            else:
+                usr_parts.append(str(content))
+        merged = ''
+        if sys_parts:
+            merged += "System Instruction:\n" + "\n".join(sys_parts).strip() + "\n\n"
+        merged += "User:\n" + "\n".join(usr_parts).strip()
+        payload = {
+            'contents': [
+                {
+                    'role': 'user',
+                    'parts': [{'text': merged[:12000]}],
+                }
+            ],
+            'generationConfig': {
+                'temperature': float(temperature),
+                'maxOutputTokens': int(max_tokens),
+            }
+        }
+        if mode == 'json':
+            # Ask for JSON mime type to encourage strict JSON
+            payload['generationConfig']['response_mime_type'] = 'application/json'
+        headers = {'Content-Type': 'application/json'}
+        r = requests.post(url, headers=headers, data=json.dumps(payload))
+        if r.status_code == 429:
+            # attach retry_after if header present
+            e = RuntimeError(f"Gemini rate limited: {r.text[:200]}")
+            try:
+                ra = r.headers.get('Retry-After')
+                if ra:
+                    setattr(e, 'retry_after', float(ra))
+            except Exception:
+                pass
+            raise e
+        if r.status_code >= 400:
+            raise RuntimeError(f"Gemini error {r.status_code}: {r.text[:200]}")
+        data = r.json()
+        try:
+            cand = (data.get('candidates') or [])[0]
+            parts = (cand.get('content') or {}).get('parts') or []
+            text = ''
+            for p in parts:
+                t = p.get('text')
+                if t:
+                    text += t
+            return (text or '').strip()
+        except Exception:
+            return json.dumps(data)[:2000]
+
+
 # =============================================
 # HEDGE FUND PROFESSIONAL UI STYLING
 # =============================================
@@ -318,6 +549,39 @@ BITGET_PASSWORD = os.getenv("BITGET_PASSWORD")
 
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-5-thinking")
+
+# --- Multi‑Provider AI Orchestrator settings ---
+AI_PROVIDER_ORDER = os.getenv("AI_PROVIDER_ORDER", "openai,gemini,grok").strip()
+
+# OpenAI limits/config (fill via .env to enforce)
+OPENAI_MAX_RPM = int(os.getenv("OPENAI_MAX_RPM", "0") or 0)  # 0 = no cap
+OPENAI_MAX_TPM = int(os.getenv("OPENAI_MAX_TPM", "0") or 0)
+OPENAI_MAX_CONCURRENCY = int(os.getenv("OPENAI_MAX_CONCURRENCY", "3") or 3)
+
+# Gemini (Google) API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MAX_RPM = int(os.getenv("GEMINI_MAX_RPM", "0") or 0)
+GEMINI_MAX_TPM = int(os.getenv("GEMINI_MAX_TPM", "0") or 0)
+GEMINI_MAX_CONCURRENCY = int(os.getenv("GEMINI_MAX_CONCURRENCY", "3") or 3)
+
+# xAI (Grok) API — OpenAI‑compatible endpoint
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+GROK_MODEL   = os.getenv("GROK_MODEL", "grok-4-latest")
+GROK_MAX_RPM = int(os.getenv("GROK_MAX_RPM", "0") or 0)
+GROK_MAX_TPM = int(os.getenv("GROK_MAX_TPM", "0") or 0)
+GROK_MAX_CONCURRENCY = int(os.getenv("GROK_MAX_CONCURRENCY", "3") or 3)
+
+# Timeframe & token knobs
+AI_MIN_INTERVAL_1M  = int(os.getenv("AI_MIN_INTERVAL_1M", "60") or 60)
+AI_MIN_INTERVAL_5M  = int(os.getenv("AI_MIN_INTERVAL_5M", "300") or 300)
+AI_MIN_INTERVAL_15M = int(os.getenv("AI_MIN_INTERVAL_15M", "900") or 900)
+AI_DEBOUNCE_MS      = int(os.getenv("AI_DEBOUNCE_MS", "400") or 400)
+AI_MAX_TOKENS_FAST  = int(os.getenv("AI_MAX_TOKENS_FAST", "256") or 256)
+AI_MAX_TOKENS_DEEP  = int(os.getenv("AI_MAX_TOKENS_DEEP", "768") or 768)
+
+# Instantiate orchestrator after env is loaded
+AI = AIOrchestrator()
 
 # --- AI & Partial TP / News settings ---
 # --- Partial TP by ROE (percent) ---
@@ -1755,18 +2019,11 @@ def analyze_news_pulse_with_ai(items):
     # Always start with heuristic fallback as safety net
     fallback_result = _heuristic_news_pulse(items)
     
-    if not OPENAI_API_KEY:
-        QUANTUM_LOGGER.warning("No OpenAI API key - using heuristic news analysis")
+    if not AI.available():
+        QUANTUM_LOGGER.warning("No AI provider configured - using heuristic news analysis")
         return fallback_result
     
     try:
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=OPENAI_API_KEY,
-            timeout=15.0,  # 15 second timeout
-            max_retries=2   # Retry failed requests
-        )
-        
         titles = [it.get("title","") for it in items if it.get("title")]
         titles = titles[:80]
         
@@ -1786,18 +2043,13 @@ def analyze_news_pulse_with_ai(items):
         
         Return only the JSON object, no other text."""
         
-        rsp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
+        raw = AI.call_chat(
+            [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload, separators=(",",":"))}
+                {"role": "user", "content": json.dumps(payload, separators=(",",":"))},
             ],
-            temperature=0.1,  # Lower temperature for more consistent results
-            max_tokens=500,  # Increased for better response quality
-            response_format={"type": "json_object"}  # Force JSON response
+            mode='json', lane='fast', max_tokens=500, temperature=0.1,
         )
-        
-        raw = rsp.choices[0].message.content.strip()
         if not raw:
             raise ValueError("Empty response from OpenAI")
             
@@ -1962,12 +2214,10 @@ def ai_decide_scale_plan(di: pd.DataFrame, hti: pd.DataFrame|None, pos: dict, p_
             plan = [(1.0,0.5),(2.0,0.25)]
     except Exception:
         pass
-    if not OPENAI_API_KEY:
+    if not AI.available():
         return plan
     # Let the model refine the plan when available
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
         last = di.iloc[-1]
         payload = {
             "side": pos.get("side"),
@@ -1978,16 +2228,10 @@ def ai_decide_scale_plan(di: pd.DataFrame, hti: pd.DataFrame|None, pos: dict, p_
             "news": news_pulse or {},
             "base_plan": plan
         }
-        rsp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role":"system","content":"Output JSON only: list of pairs under key 'plan' where each pair is [R_multiple, fraction]. Keep 1-3 items. Fractions between 0 and 1."},
-                {"role":"user","content": json.dumps(payload, separators=(",",":"))}
-            ],
-            temperature=0.2,
-            max_tokens=120,
-        )
-        raw = rsp.choices[0].message.content.strip()
+        raw = AI.call_chat([
+            {"role":"system","content":"Output JSON only: list of pairs under key 'plan' where each pair is [R_multiple, fraction]. Keep 1-3 items. Fractions between 0 and 1."},
+            {"role":"user","content": json.dumps(payload, separators=(",",":"))}
+        ], mode='json', lane='fast', max_tokens=120, temperature=0.2)
         obj = json.loads(raw)
         cand = obj.get("plan")
         out = []
@@ -3669,18 +3913,11 @@ def ai_explain(symbol, timeframe, action, conf, reason, last_row):
     # Professional fallback explanation
     fallback_explanation = f"🎯 {action} Signal ({conf}% confidence)\n📊 Analysis: {reason}\n💼 QUANTUM CAPITAL AI Analysis"
     
-    if not OPENAI_API_KEY:
-        QUANTUM_LOGGER.warning("No OpenAI API key - using fallback explanation")
+    if not AI.available():
+        QUANTUM_LOGGER.warning("No AI provider configured - using fallback explanation")
         return fallback_explanation
     
     try:
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=OPENAI_API_KEY,
-            timeout=12.0,  # Shorter timeout for UI responsiveness  
-            max_retries=1   # Single retry to avoid long delays
-        )
-        
         # Enhanced context with error checking
         try:
             txt = (
@@ -3710,17 +3947,10 @@ Requirements:
 
 Format: Professional paragraph format, no bullet points."""
 
-        msg = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": txt}
-            ],
-            temperature=0.2,  # Lower for more consistent professional tone
-            max_tokens=180,   # Sufficient for detailed but concise analysis
-        )
-        
-        ai_response = msg.choices[0].message.content.strip()
+        ai_response = AI.call_chat([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": txt}
+        ], mode='text', lane='fast', max_tokens=180, temperature=0.2)
         
         # Validate response quality
         if not ai_response or len(ai_response.strip()) < 10:
@@ -3777,13 +4007,11 @@ def ai_predict_target(symbol, timeframe, last_row, sups_all, ress_all, atr_val):
             return float(px - 2.0 * max(atr_val, 1e-6)), "Heuristic: ATR extension down"
         # sideways
         return float(px), "Heuristic: sideways"
-    # If no API key, return heuristic
-    if not OPENAI_API_KEY:
+    # If no AI provider, return heuristic
+    if not AI.available():
         return _heuristic()
     # Prepare concise context for the model
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
         # take up to 4 nearest S/R levels for context
         near_res = sorted([r for r in ress_all if r > px])[:4]
         near_sup = sorted([s for s in sups_all if s < px], reverse=True)[:4]
@@ -3802,16 +4030,10 @@ def ai_predict_target(symbol, timeframe, last_row, sups_all, ress_all, atr_val):
             "supports": near_sup,
             "resistances": near_res,
         }
-        msg = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "Return ONLY one minified JSON with keys target_price (float) and basis (short, <60 chars). No prose."},
-                {"role": "user", "content": json.dumps(prompt, separators=(",",":"))}
-            ],
-            temperature=0.2,
-            max_tokens=60,
-        )
-        raw = msg.choices[0].message.content.strip()
+        raw = AI.call_chat([
+            {"role": "system", "content": "Return ONLY one minified JSON with keys target_price (float) and basis (short, <60 chars). No prose."},
+            {"role": "user", "content": json.dumps(prompt, separators=(",",":"))}
+        ], mode='json', lane='fast', max_tokens=60, temperature=0.2)
         try:
             obj = json.loads(raw)
             tgt = float(obj.get("target_price"))
