@@ -5677,7 +5677,10 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
     
         # subset khusus plotting (lebih ringan), logika tetap pakai 'di' penuh
         vis = di.tail(PLOT_BARS).copy()
-    
+        
+        # News pulse (may be empty) must be fetched BEFORE calling simple_signal
+        news = STATE.get("news_pulse") or {}
+
         action, conf, reason, score = simple_signal(di, htf_bias, near_sup_atr, near_res_atr, tf=tf, news=news)
         # OB as soft feature → adjust confidence only (no gating)
         if OB_SOFT:
@@ -5698,7 +5701,6 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
                 reason += "; OB: " + ", ".join(notes)
         # Enhanced AI direction probability (short-horizon, good for 1m)
         p_up, dir_score = ai_predict_direction(di)
-        news = STATE.get("news_pulse") or {}
     
         # Balance (USDT-M Futures) — show both Available (free) and Equity (mark PnL)
         try:
