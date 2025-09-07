@@ -59,6 +59,8 @@ Convenience targets
   - PNG (with branding) and CSV (OHLC+indicator dataset)
 - Alerts & Status
   - Signal alert banner (BUY/SELL) and header connection indicator (ONLINE/OFFLINE • LIVE/PAPER)
+  - Trading Mode select: None (IDLE), Paper, Backtesting, Live
+  - Policy Mode select: Strict (ENV), Hybrid (AI + guards), AI Only
 
 ## Fine‑Tuning & Execution
 - Goal: tingkatkan akurasi entry dan minimalkan slippage eksekusi.
@@ -119,6 +121,7 @@ Timer → Position detect → OHLCV refresh → Indicators/OB → S/R + ATR
   - Confidence calibration: `FT_CONF_W0`, `FT_CONF_W1`, `FT_CONF_W2`, `FT_CONF_W3`
   - Per‑TF gates: `ENTRY_CONF_1M/5M/15M/1H/4H/1D`, `RR_MIN_DEFAULT`, `RR_MIN_1M/5M/15M/1H/4H/1D`
   - AI Policy (Hybrid): `CONF_HARD_MIN`, `RR_HARD_MIN` — AI menyarankan ambang dinamis; sistem menerapkan batas bawah minimal untuk menjaga expectancy.
+  - Policy Mode: `POLICY_MODE` (strict|hybrid|ai_only), `AI_ONLY_FALLBACK` (no_trade|hybrid)
 
 ## Performance Tuning
 - Use `float32` for indicator frames to cut memory ~50% (`DF_FLOAT_DTYPE=float32`).

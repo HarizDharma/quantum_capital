@@ -589,7 +589,7 @@ GROK_MAX_RPM = int(os.getenv("GROK_MAX_RPM", "0") or 0)
 GROK_MAX_TPM = int(os.getenv("GROK_MAX_TPM", "0") or 0)
 GROK_MAX_CONCURRENCY = int(os.getenv("GROK_MAX_CONCURRENCY", "3") or 3)
 
-# Timeframe & token knobs
+# Timeframe & token knobs (some knobs removed from env; kept here if needed internally)
 AI_MIN_INTERVAL_1M  = int(os.getenv("AI_MIN_INTERVAL_1M", "60") or 60)
 AI_MIN_INTERVAL_5M  = int(os.getenv("AI_MIN_INTERVAL_5M", "300") or 300)
 AI_MIN_INTERVAL_15M = int(os.getenv("AI_MIN_INTERVAL_15M", "900") or 900)
@@ -747,6 +747,10 @@ RR_MIN_1D  = float(os.getenv("RR_MIN_1D",  str(max(1.6, RR_MIN_DEFAULT-0.9))))
 # Minimal hard guards for AI-driven policy (Hybrid mode)
 CONF_HARD_MIN = int(os.getenv("CONF_HARD_MIN", "55"))
 RR_HARD_MIN   = float(os.getenv("RR_HARD_MIN", "1.6"))
+
+# Policy mode env (strict | hybrid | ai_only) and fallback behavior for ai_only when AI fails
+POLICY_MODE_ENV = (os.getenv("POLICY_MODE", "hybrid") or "hybrid").strip().lower()
+AI_ONLY_FALLBACK = (os.getenv("AI_ONLY_FALLBACK", "no_trade") or "no_trade").strip().lower()
 
 # runtime state (in-memory)
 # Enhanced state management with persistence and error recovery
@@ -4818,32 +4822,59 @@ def create_trading_controls():
             )
         ], style={"marginBottom": "20px"}),
         
-        # Trading Mode Selection
+        # Trading Mode Selection (Dropdown)
         html.Div([
             html.Label("TRADING MODE", style={
                 "fontSize": "11px",
                 "fontWeight": "600",
                 "color": COLORS['text_secondary'],
-                "marginBottom": "12px",
+                "marginBottom": "8px",
                 "display": "block",
                 "textTransform": "uppercase",
                 "letterSpacing": "0.5px"
             }),
-            dcc.Checklist(
-                id="backtesting",
-                options=[{"label": "📊 Backtesting Mode", "value": "backtest"}],
-                value=["backtest"],  # Default to backtesting
+            dcc.Dropdown(
+                id="trading_mode",
+                options=[
+                    {"label": "— Select —", "value": None},
+                    {"label": "Paper", "value": "paper"},
+                    {"label": "Backtesting", "value": "backtest"},
+                    {"label": "Live", "value": "live"}
+                ],
+                value=None,
+                placeholder="Choose trading mode",
                 style={
-                    "color": COLORS['text_primary'],
-                    "marginBottom": "8px"
+                    "backgroundColor": COLORS['surface'],
+                    "border": "none",
+                    "borderRadius": "6px"
                 }
-            ),
-            dcc.Checklist(
-                id="live",
-                options=[{"label": "🚀 Live Trading", "value": "live"}],
-                value=[],
+            )
+        ], style={"marginBottom": "16px"}),
+
+        # Policy Mode Selection (Dropdown)
+        html.Div([
+            html.Label("POLICY MODE", style={
+                "fontSize": "11px",
+                "fontWeight": "600",
+                "color": COLORS['text_secondary'],
+                "marginBottom": "8px",
+                "display": "block",
+                "textTransform": "uppercase",
+                "letterSpacing": "0.5px"
+            }),
+            dcc.Dropdown(
+                id="policy_mode",
+                options=[
+                    {"label": "Strict (ENV gates)", "value": "strict"},
+                    {"label": "Hybrid (AI + guards)", "value": "hybrid"},
+                    {"label": "AI Only", "value": "ai_only"}
+                ],
+                value=None,
+                placeholder="Choose policy mode",
                 style={
-                    "color": COLORS['text_primary']
+                    "backgroundColor": COLORS['surface'],
+                    "border": "none",
+                    "borderRadius": "6px"
                 }
             )
         ], style={"marginBottom": "24px"}),
@@ -5365,9 +5396,9 @@ tick_gc()
 @app.callback(
     Output("connection-status", "children"),
     Input("timer", "n_intervals"),
-    Input("live", "value"),
+    Input("trading_mode", "value"),
 )
-def update_connection_status(n_intervals, live_value):
+def update_connection_status(n_intervals, trading_mode_value):
     try:
         live_on = bool(STATE.get("live_on"))
     except Exception:
@@ -5532,12 +5563,13 @@ def start_stop(n_start, n_stop, sym, tf):
     Input("tf","value"),
     Input("start","n_clicks"),
     Input("stop","n_clicks"),
-    State("live","value"),
+    State("trading_mode","value"),
+    State("policy_mode","value"),
     State("pos-store","data"),
     State("overlay_opts","value"),
 )
 def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, stop_clicks, 
-                     live_value, pos_store, overlay_vals):
+                     trading_mode_value, policy_mode_value, pos_store, overlay_vals):
     """QUANTUM CAPITAL Main Dashboard Callback - Professional Trading Interface"""
     try:
         # Update basic health heartbeat
@@ -5548,12 +5580,13 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
             STATE["system_health"] = sh
         except Exception:
             pass
-        # Store live mode setting globally (unified boolean)
-        try:
-            ui_live = bool(live_value and ("live" in live_value))
-        except Exception:
-            ui_live = False
-        STATE["live_on"] = bool(ui_live and LIVE_TRADING and (type(EX).__name__ != "SafeExchange"))
+        # Store trading mode and live flag
+        mode = (trading_mode_value or "").strip().lower() if trading_mode_value is not None else None
+        STATE["trading_mode"] = mode
+        STATE["live_on"] = bool((mode == 'live') and LIVE_TRADING and (type(EX).__name__ != "SafeExchange"))
+        # Store policy mode (UI override > env)
+        pm = (policy_mode_value or POLICY_MODE_ENV or 'hybrid')
+        STATE["policy_mode"] = pm
         
         running = not bool(timer_disabled)
         # arahkan background fetcher dan pastikan aktif
@@ -5820,17 +5853,36 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
     
         if allow_trade:
             try:
-                # AI policy gates (hybrid) with minimal hard guards
-                if pos is None and ALLOW_TRADE and conf >= int(CONF_MIN_EFF) and action in ("BUY","SELL"):
+                # Policy behavior mapping: strict | hybrid | ai_only
+                policy_mode = (STATE.get("policy_mode") or POLICY_MODE_ENV or 'hybrid')
+                if policy_mode == 'strict':
+                    ALLOW_EFF = True
+                    CONF_EFF  = int(_tf_conf_min(tf))
+                    RR_EFF    = float(_tf_rr_min(tf))
+                elif policy_mode == 'ai_only':
+                    # Use AI-only thresholds with hard guards, and require ALLOW_TRADE
+                    ALLOW_EFF = bool(ALLOW_TRADE)
+                    CONF_EFF  = int(CONF_HARD_MIN if conf_gate_ai is None else max(CONF_HARD_MIN, int(conf_gate_ai)))
+                    RR_EFF    = float(RR_HARD_MIN if rr_gate_ai is None else max(RR_HARD_MIN, float(rr_gate_ai)))
+                    # If AI failed to provide policy and fallback is no_trade, block
+                    if (conf_gate_ai is None and rr_gate_ai is None and AI_ONLY_FALLBACK == 'no_trade'):
+                        ALLOW_EFF = False
+                else:
+                    # hybrid (default): AI thresholds + hard guards
+                    ALLOW_EFF = bool(ALLOW_TRADE)
+                    CONF_EFF  = int(CONF_MIN_EFF)
+                    RR_EFF    = float(RR_MIN_EFF)
+
+                if pos is None and ALLOW_EFF and conf >= int(CONF_EFF) and action in ("BUY","SELL"):
                     side = "long" if action == "BUY" else "short"
                     # Enhanced leverage selection & notional sizing with risk management
                     lev_use = choose_leverage(symbol, tf, di)
                     notional = compute_notional_usdt_enhanced(symbol, last_price, di)
                     amt = max(1e-8, notional / max(1e-12, last_price))
                     tp, sl, rr_plan = derive_tp_sl_mtf(di, hti, side, tf)
-                    # Gate on minimum RR per AI suggestion with hard guard
-                    if rr_plan is None or float(rr_plan) < float(RR_MIN_EFF):
-                        raise Exception(f"RR below {float(RR_MIN_EFF):.2f}:1 threshold; skip entry")
+                    # RR gate per policy
+                    if rr_plan is None or float(rr_plan) < float(RR_EFF):
+                        raise Exception(f"RR below {float(RR_EFF):.2f}:1 threshold; skip entry")
                     od = place_market_order(symbol, side, amt, reduce_only=False, lev=lev_use)
                     if od.get("status") != "error":
                         r0 = abs(float(last_price) - float(sl))

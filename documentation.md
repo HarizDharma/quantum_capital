@@ -173,6 +173,7 @@ Convenience targets
   - `state/` — persisted lightweight state/cache
   - `server.log` — recent server output (optional)
   - `venv/` — local virtual environment
+  - UI Controls — Trading Mode (select) and Policy Mode (select)
 
 ## Project Logic Structure
 - Config & Env
@@ -219,6 +220,7 @@ Convenience targets
 - UI & Callbacks
   - Components: `create_logo_header()`, sidebar, metric cards, chart builder.
   - Clientside alert shows BUY/SELL beside ONLINE • LIVE/PAPER.
+  - Controls: Trading Mode select (None/Paper/Backtesting/Live), Policy Mode select (strict/hybrid/ai_only).
   - Server callbacks: `refresh_dashboard()` (core loop), `update_connection_status()`, `update_health()`, CSV export.
 
 - Background Workers
@@ -230,8 +232,9 @@ Convenience targets
 - Tick Sequence (High‑Level)
   - Timer tick → heartbeat + live toggle → position detection.
   - Load/refresh OHLCV → compute indicators/OB → compute S/R + ATR proximity.
-  - AI target (cached per candle) → `simple_signal()` (with TF/news gates) → derive TP/SL & RR plan.
-  - If allowed and gates pass: size order → place order → ensure TP/SL/trailing.
+  - AI target (cached per candle) → `simple_signal()` (with gates) → derive TP/SL & RR plan.
+  - Policy Mode mapping (strict/hybrid/ai_only): compute effective CONF/RR thresholds and allow_trade.
+  - If allowed and thresholds pass: size order → place order → ensure TP/SL/trailing.
   - Build chart/tiles → update AI explanation (cached) → update System Health/metrics.
 
 ## Flow Diagrams
@@ -260,7 +263,7 @@ Dashboard Tick Flow
       v
 [Calibrated Confidence (logistic blend) + Gates]
   (ATR‑level blocks, news sentiment/rate bias,
-   AI Policy (conf_min/rr_min) with hard guards)
+   Policy Mode: strict (ENV), hybrid (AI + hard guards), ai_only (AI thresholds, minimal sanity))
       |
       v
 [Decision]  -> HOLD ───────────────┐
