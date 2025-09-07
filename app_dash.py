@@ -4781,7 +4781,6 @@ def create_trading_controls():
             dcc.Dropdown(
                 id="trading_mode",
                 options=[
-                    {"label": "— Select —", "value": None},
                     {"label": "Paper", "value": "paper"},
                     {"label": "Backtesting", "value": "backtest"},
                     {"label": "Live", "value": "live"}
