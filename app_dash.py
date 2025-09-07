@@ -173,6 +173,13 @@ class AIOrchestrator:
         # Lazy clients
         self._oa = None
         self._grok = None
+        # Concurrency guards per provider
+        import threading
+        self._sem = {
+            'openai': threading.BoundedSemaphore(max(1, int(OPENAI_MAX_CONCURRENCY or 1))),
+            'gemini': threading.BoundedSemaphore(max(1, int(GEMINI_MAX_CONCURRENCY or 1))),
+            'grok':   threading.BoundedSemaphore(max(1, int(GROK_MAX_CONCURRENCY or 1))),
+        }
 
     def available(self) -> bool:
         # Any provider with API key configured
@@ -264,6 +271,10 @@ class AIOrchestrator:
             if not self._eligible(prov, est):
                 continue
             try:
+                sem = self._sem.get(prov)
+                got = sem.acquire(blocking=False) if sem else True
+                if not got:
+                    continue
                 if prov == 'openai':
                     txt = self._call_openai(messages, mode=mode, max_tokens=max_tokens, temperature=temperature)
                 elif prov == 'grok':
@@ -288,6 +299,12 @@ class AIOrchestrator:
                     ra = None
                 self._cooldown(prov, ra)
                 continue
+            finally:
+                try:
+                    if got and sem:
+                        sem.release()
+                except Exception:
+                    pass
         if last_err:
             raise last_err
         raise RuntimeError('No eligible AI provider available')
