@@ -4767,6 +4767,62 @@ def create_trading_controls():
             "textTransform": "uppercase",
             "letterSpacing": "1px"
         }),
+        # Trading Mode Selection (Dropdown) — placed above Policy Mode
+        html.Div([
+            html.Label("TRADING MODE", style={
+                "fontSize": "11px",
+                "fontWeight": "600",
+                "color": COLORS['text_secondary'],
+                "marginBottom": "8px",
+                "display": "block",
+                "textTransform": "uppercase",
+                "letterSpacing": "0.5px"
+            }),
+            dcc.Dropdown(
+                id="trading_mode",
+                options=[
+                    {"label": "— Select —", "value": None},
+                    {"label": "Paper", "value": "paper"},
+                    {"label": "Backtesting", "value": "backtest"},
+                    {"label": "Live", "value": "live"}
+                ],
+                value=None,
+                placeholder="Choose trading mode",
+                style={
+                    "backgroundColor": COLORS['surface'],
+                    "border": "none",
+                    "borderRadius": "6px"
+                }
+            )
+        ], style={"marginBottom": "16px"}),
+
+        # Policy Mode Selection (Dropdown)
+        html.Div([
+            html.Label("POLICY MODE", style={
+                "fontSize": "11px",
+                "fontWeight": "600",
+                "color": COLORS['text_secondary'],
+                "marginBottom": "8px",
+                "display": "block",
+                "textTransform": "uppercase",
+                "letterSpacing": "0.5px"
+            }),
+            dcc.Dropdown(
+                id="policy_mode",
+                options=[
+                    {"label": "Strict (ENV gates)", "value": "strict"},
+                    {"label": "Hybrid (AI + guards)", "value": "hybrid"},
+                    {"label": "AI Only", "value": "ai_only"}
+                ],
+                value=None,
+                placeholder="Choose policy mode",
+                style={
+                    "backgroundColor": COLORS['surface'],
+                    "border": "none",
+                    "borderRadius": "6px"
+                }
+            )
+        ], style={"marginBottom": "20px"}),
         
         # Symbol selection
         html.Div([
@@ -4822,62 +4878,6 @@ def create_trading_controls():
             )
         ], style={"marginBottom": "20px"}),
         
-        # Trading Mode Selection (Dropdown)
-        html.Div([
-            html.Label("TRADING MODE", style={
-                "fontSize": "11px",
-                "fontWeight": "600",
-                "color": COLORS['text_secondary'],
-                "marginBottom": "8px",
-                "display": "block",
-                "textTransform": "uppercase",
-                "letterSpacing": "0.5px"
-            }),
-            dcc.Dropdown(
-                id="trading_mode",
-                options=[
-                    {"label": "— Select —", "value": None},
-                    {"label": "Paper", "value": "paper"},
-                    {"label": "Backtesting", "value": "backtest"},
-                    {"label": "Live", "value": "live"}
-                ],
-                value=None,
-                placeholder="Choose trading mode",
-                style={
-                    "backgroundColor": COLORS['surface'],
-                    "border": "none",
-                    "borderRadius": "6px"
-                }
-            )
-        ], style={"marginBottom": "16px"}),
-
-        # Policy Mode Selection (Dropdown)
-        html.Div([
-            html.Label("POLICY MODE", style={
-                "fontSize": "11px",
-                "fontWeight": "600",
-                "color": COLORS['text_secondary'],
-                "marginBottom": "8px",
-                "display": "block",
-                "textTransform": "uppercase",
-                "letterSpacing": "0.5px"
-            }),
-            dcc.Dropdown(
-                id="policy_mode",
-                options=[
-                    {"label": "Strict (ENV gates)", "value": "strict"},
-                    {"label": "Hybrid (AI + guards)", "value": "hybrid"},
-                    {"label": "AI Only", "value": "ai_only"}
-                ],
-                value=None,
-                placeholder="Choose policy mode",
-                style={
-                    "backgroundColor": COLORS['surface'],
-                    "border": "none",
-                    "borderRadius": "6px"
-                }
-            )
-        ], style={"marginBottom": "24px"}),
 
         # System Health Panel
         html.Div([
