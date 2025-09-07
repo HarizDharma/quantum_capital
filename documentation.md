@@ -143,11 +143,81 @@ Convenience targets
   - Grok: `GROK_API_KEY`, `GROK_MODEL=grok-4-latest`, `GROK_MAX_RPM`, `GROK_MAX_TPM`, `GROK_MAX_CONCURRENCY`
   - Timeframe & tokens: `AI_MIN_INTERVAL_1M=60`, `AI_MIN_INTERVAL_5M=300`, `AI_MIN_INTERVAL_15M=900`, `AI_DEBOUNCE_MS=400`, `AI_MAX_TOKENS_FAST=256`, `AI_MAX_TOKENS_DEEP=768`
   - Catatan: selalu set `OPENAI_MODEL` via `.env`; isi nilai RPM/TPM sesuai kuota nyata, mulai konservatif dan kalibrasi dari telemetry/error header.
+  - Fine‑Tuning (signals):
+    - Base thresholds: `ENTRY_CONF`, `ADX_MIN`, `SQUEEZE_MIN_BBWIDTH`, `P_UP_MIN_BUY`, `ATR_PCT_MIN`, `TP_ATR_MULT`, `SL_ATR_MULT`, `RISK_AVERSION`, `OB_PAD_ATR`, `OB_BONUS`.
+    - Gating dekat level: `FT_BLOCK_NEAR_RES_ATR_BUY`, `FT_BLOCK_NEAR_SUP_ATR_SELL` (ATR‑based distance gates).
+    - News gates: `FT_NEWS_LONG_MIN`, `FT_NEWS_SHORT_MAX`, `FT_RATE_HIKE_BLOCKS_LONG`, `FT_RATE_CUT_BLOCKS_SHORT`.
+    - Confidence calibration: `FT_CONF_W0`, `FT_CONF_W1`, `FT_CONF_W2`, `FT_CONF_W3`.
+    - Per‑TF gates: `ENTRY_CONF_1M/5M/15M/1H/4H/1D`, `RR_MIN_DEFAULT`, `RR_MIN_1M/5M/15M/1H/4H/1D`.
 
 - Implementation Plan (Non‑coding)
   - Rancang “AI Orchestrator” (limiter RPM/TPM, queue, concurrency guard, circuit breaker, routing).
   - Scheduler adaptif timeframe + debounce + cancel stale + cache; samakan skema output JSON lintas provider.
   - QA: simulasi 429/Retry‑After, uji 1m/5m/15m, failover OpenAI↔Gemini↔Grok, dan verifikasi metrik di System Health.
+
+## Project Structure
+- Root files
+  - `app_dash.py` — single‑file Dash app (UI, data, signals, AI orchestration)
+  - `requirements.txt` — Python dependencies
+  - `Makefile` — setup/run/check convenience targets
+  - `README.md` — quick reference and usage
+  - `documentation.md` — detailed docs (specs, architecture, ops)
+  - `.env.example` — environment template (no secrets)
+  - `.env` — local environment (ignored by Git)
+- Runtime artifacts
+  - `logs/` — rotating application logs (trading, errors)
+  - `state/` — persisted lightweight state/cache
+  - `server.log` — recent server output (optional)
+  - `venv/` — local virtual environment
+
+## Fine‑Tuning & Execution (Compact Plan)
+- Objectives
+  - Tingkatkan akurasi sinyal entry, kurangi false positive, dan minimalkan slippage saat eksekusi.
+  - Kalibrasi “confidence” yang dapat dipakai untuk sizing dan gating keputusan.
+
+- Labeling & Data Hygiene
+  - Target definisi jelas (mis. arah + threshold ret/ATR dalam N bar) atau triple‑barrier labeling (TP/SL/time‑out).
+  - Hindari look‑ahead; sinkron waktu; gunakan multi‑TF (LTF/HTF) yang diselaraskan.
+  - Sample weighting oleh volatilitas/regime agar tidak bias ke kondisi tenang.
+
+- Features (ringkas, kuat, real‑time)
+  - OHLCV multi‑resolusi, indikator inti (EMA cross, MACD hist, RSI, Stoch, BB, ATR).
+  - Context: HTF bias, order block proximity, distance ke S/R berbasis ATR.
+  - Microstructure (opsional): spread, imbalance, burst/velocity (jika data tersedia).
+  - Exogenous ringan: news pulse (crypto/politics/rate) → fitur terbatas, terkalibrasi.
+
+- Models & Training
+  - Baseline kuat: Gradient‑Boosted Trees (LightGBM/XGBoost) untuk klasifikasi long/short/flat.
+  - Alternatif DL: 1D‑CNN/TCN/LSTM untuk pola sekuens (latensi rendah, batch kecil).
+  - Validasi: walk‑forward, time series split, early‑stopping; metrik: hit‑rate, MCC/F1, expectancy.
+  - Kalibrasi probabilitas: Platt/Isotonic untuk confidence yang reliabel.
+
+- Thresholding & Sizing
+  - Optimasi threshold by cost‑aware objective (biaya, slip, funding) → maksimumkan expectancy/Sharpe.
+  - Dynamic threshold oleh regime/volatilitas; gunakan ATR untuk normalisasi.
+  - Position sizing: Kelly fraksi/vol targeting; cap leverage; guardrail risiko.
+
+- Entry & Execution Quality
+  - Gate entry: konfirmasi HTF bias + OB proximity + jarak ke S/R (hindari masuk tepat di level).
+  - Hindari spread melebar/vol spike; no‑trade windows saat news berdampak.
+  - Eksekusi: limit/iceberg/TWAP kecil pada likuiditas memadai; market hanya saat perlu dan dengan slip guard.
+  - Cancel/replace bila tidak terisi dalam X detik atau kondisi berubah.
+
+- Risk Controls & Circuit Breakers
+  - Hard stop, max daily loss, pause saat performa buruk/429 API beruntun/latensi abnormal.
+  - Audit trail keputusan (fitur, proba, threshold, alasan gating) untuk evaluasi.
+
+- Evaluation & Monitoring
+  - Backtest biaya realistis (maker/taker, funding, slip); OOS panjang; stress regime.
+  - Track: hit‑rate, expectancy, MDD, PSR, turnover; alarm outlier.
+  - A/B di paper mode sebelum live, kemudian progressive rollout.
+
+- Implementation Roadmap (non‑coding outline)
+  1) Siapkan dataset label (triple‑barrier/ATR target) + features multi‑TF.
+  2) Latih baseline GBDT, validasi time‑split, kalibrasi probabilitas.
+  3) Optimasi threshold cost‑aware + sizing rules; definisikan gate eksekusi.
+  4) Integrasikan ke app: scoring ringan + gating entry + audit logging.
+  5) Uji walk‑forward dan paper trade; iterasi parameter; rollout bertahap.
 
 ## Troubleshooting
 - Port in use: “Port 8050 is in use” → stop the previous server (`pkill -f app_dash.py`) or run on a different port.

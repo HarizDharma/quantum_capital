@@ -60,6 +60,14 @@ Convenience targets
 - Alerts & Status
   - Signal alert banner (BUY/SELL) and header connection indicator (ONLINE/OFFLINE • LIVE/PAPER)
 
+## Fine‑Tuning & Execution
+- Goal: tingkatkan akurasi entry dan minimalkan slippage eksekusi.
+- Data & labels: triple‑barrier/ATR‑based; hindari look‑ahead; multi‑TF sinkron.
+- Model: GBDT (LightGBM/XGBoost) baseline; DL sekuens (1D‑CNN/TCN/LSTM) opsional.
+- Kalibrasi: Platt/Isotonic untuk confidence yang reliabel; threshold cost‑aware.
+- Eksekusi: gate entry (HTF bias, OB proximity, jarak S/R), slip guard, limit/TWAP kecil, cancel/replace.
+- Detail lengkap: lihat `documentation.md` bagian Fine‑Tuning & Execution.
+
 ## Architecture & Data Flow
 - UI selects `symbol` and `timeframe` → background fetcher updates OHLCV cache.
 - OHLCV data: cached on disk, fetched/merged incrementally; indicators computed in batch with memory‑optimized dtypes.
@@ -87,6 +95,20 @@ Convenience targets
 - Telemetry
   - Latency recorded internally and shown in System Health
 
+- AI Orchestrator
+  - Routing: `AI_PROVIDER_ORDER=openai,gemini,grok`
+  - OpenAI: `OPENAI_MAX_RPM`, `OPENAI_MAX_TPM`, `OPENAI_MAX_CONCURRENCY`
+  - Gemini: `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_MAX_RPM`, `GEMINI_MAX_TPM`, `GEMINI_MAX_CONCURRENCY`
+  - Grok: `GROK_API_KEY`, `GROK_MODEL`, `GROK_MAX_RPM`, `GROK_MAX_TPM`, `GROK_MAX_CONCURRENCY`
+  - Timeframe & tokens: `AI_MIN_INTERVAL_*`, `AI_DEBOUNCE_MS`, `AI_MAX_TOKENS_FAST`, `AI_MAX_TOKENS_DEEP`
+
+- Fine‑Tuning (signals)
+  - Base thresholds: `ENTRY_CONF`, `ADX_MIN`, `SQUEEZE_MIN_BBWIDTH`, `P_UP_MIN_BUY`, `ATR_PCT_MIN`, `TP_ATR_MULT`, `SL_ATR_MULT`, `RISK_AVERSION`, `OB_PAD_ATR`, `OB_BONUS`
+  - Level gates: `FT_BLOCK_NEAR_RES_ATR_BUY`, `FT_BLOCK_NEAR_SUP_ATR_SELL`
+  - News gates: `FT_NEWS_LONG_MIN`, `FT_NEWS_SHORT_MAX`, `FT_RATE_HIKE_BLOCKS_LONG`, `FT_RATE_CUT_BLOCKS_SHORT`
+  - Confidence calibration: `FT_CONF_W0`, `FT_CONF_W1`, `FT_CONF_W2`, `FT_CONF_W3`
+  - Per‑TF gates: `ENTRY_CONF_1M/5M/15M/1H/4H/1D`, `RR_MIN_DEFAULT`, `RR_MIN_1M/5M/15M/1H/4H/1D`
+
 ## Performance Tuning
 - Use `float32` for indicator frames to cut memory ~50% (`DF_FLOAT_DTYPE=float32`).
 - Limit indicator window length via `IND_MAX_LEN`.
@@ -112,6 +134,8 @@ Convenience targets
 - Unit/integration tests for indicators/Elliott/signal modules.
 
 ## Changelog
+- 2025-09-08 (later)
+  - Docs: Tambah rencana Fine‑Tuning & Execution (akurasi entry + kualitas eksekusi) dan Project Structure.
 - 2025-09-08
   - UI: Signal alert moved to header, displayed inline beside `ONLINE • LIVE/PAPER` to keep bottom area clean.
   - Docs: Updated README and documentation.md to reflect root-level layout, added note to always set `OPENAI_MODEL` in `.env`, and included direct run command.
