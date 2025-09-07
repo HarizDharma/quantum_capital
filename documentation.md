@@ -149,6 +149,10 @@ Convenience targets
     - News gates: `FT_NEWS_LONG_MIN`, `FT_NEWS_SHORT_MAX`, `FT_RATE_HIKE_BLOCKS_LONG`, `FT_RATE_CUT_BLOCKS_SHORT`.
     - Confidence calibration: `FT_CONF_W0`, `FT_CONF_W1`, `FT_CONF_W2`, `FT_CONF_W3`.
     - Per‑TF gates: `ENTRY_CONF_1M/5M/15M/1H/4H/1D`, `RR_MIN_DEFAULT`, `RR_MIN_1M/5M/15M/1H/4H/1D`.
+  - AI Policy (Hybrid):
+    - `CONF_HARD_MIN` — batas bawah confidence (default 55).
+    - `RR_HARD_MIN` — batas bawah R:R (default 1.6).
+    - AI akan menyarankan `conf_min` dan `rr_min` dinamis per konteks; sistem menerapkan max(hard_min, saran_AI).
 
 - Implementation Plan (Non‑coding)
   - Rancang “AI Orchestrator” (limiter RPM/TPM, queue, concurrency guard, circuit breaker, routing).
@@ -256,7 +260,7 @@ Dashboard Tick Flow
       v
 [Calibrated Confidence (logistic blend) + Gates]
   (ATR‑level blocks, news sentiment/rate bias,
-   per‑TF CONF/RR thresholds)
+   AI Policy (conf_min/rr_min) with hard guards)
       |
       v
 [Decision]  -> HOLD ───────────────┐

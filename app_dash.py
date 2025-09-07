@@ -600,6 +600,51 @@ AI_MAX_TOKENS_DEEP  = int(os.getenv("AI_MAX_TOKENS_DEEP", "768") or 768)
 # Instantiate orchestrator after env is loaded
 AI = AIOrchestrator()
 
+# ==============================
+# AI trade policy (Hybrid mode)
+# ==============================
+def ai_trade_policy(symbol: str, tf: str, di: pd.DataFrame, htf_bias: str, p_up: float, ap: float,
+                    adx_val: float | None, near_sup_atr: float, near_res_atr: float, rr_plan: float | None, news: dict | None) -> dict:
+    """Ask AI for dynamic thresholds and allow/deny advice.
+    Returns dict with keys: allow_trade(bool), rr_min(float|None), conf_min(int|None), notes(list), risk_flags(list).
+    Fallback: allow=True with None thresholds.
+    """
+    payload = {
+        "symbol": symbol,
+        "tf": tf,
+        "htf_bias": htf_bias,
+        "p_up": float(p_up) if p_up is not None else None,
+        "atr_pct": float(ap) if ap is not None else None,
+        "adx": float(adx_val) if adx_val is not None else None,
+        "near_sup_atr": float(near_sup_atr),
+        "near_res_atr": float(near_res_atr),
+        "rr_plan": float(rr_plan) if rr_plan is not None else None,
+        "news": news or {},
+    }
+    system = (
+        "You are a trading risk engine. Respond ONLY valid JSON with keys: "
+        "allow_trade (bool), rr_min (number or null), conf_min (integer or null), "
+        "notes (array of short strings), risk_flags (array of strings). "
+        "If context suggests low edge (e.g., too close to opposite level), set allow_trade=false. "
+        "Do NOT include any prose outside JSON."
+    )
+    try:
+        raw = AI.call_chat([
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, separators=(",", ":"))},
+        ], mode='json', lane='fast', max_tokens=180, temperature=0.1)
+        obj = json.loads(raw)
+        out = {
+            "allow_trade": bool(obj.get("allow_trade", True)),
+            "rr_min": obj.get("rr_min"),
+            "conf_min": obj.get("conf_min"),
+            "notes": obj.get("notes") or [],
+            "risk_flags": obj.get("risk_flags") or [],
+        }
+        return out
+    except Exception:
+        return {"allow_trade": True, "rr_min": None, "conf_min": None, "notes": [], "risk_flags": []}
+
 # --- AI & Partial TP / News settings ---
 # --- Partial TP by ROE (percent) ---
 # --- Trailing Stop settings (by ROE & ATR lock) ---
@@ -698,6 +743,10 @@ RR_MIN_15M = float(os.getenv("RR_MIN_15M", str(max(2.2, RR_MIN_DEFAULT-0.3))))
 RR_MIN_1H  = float(os.getenv("RR_MIN_1H",  str(max(2.0, RR_MIN_DEFAULT-0.5))))
 RR_MIN_4H  = float(os.getenv("RR_MIN_4H",  str(max(1.8, RR_MIN_DEFAULT-0.7))))
 RR_MIN_1D  = float(os.getenv("RR_MIN_1D",  str(max(1.6, RR_MIN_DEFAULT-0.9))))
+
+# Minimal hard guards for AI-driven policy (Hybrid mode)
+CONF_HARD_MIN = int(os.getenv("CONF_HARD_MIN", "55"))
+RR_HARD_MIN   = float(os.getenv("RR_HARD_MIN", "1.6"))
 
 # runtime state (in-memory)
 # Enhanced state management with persistence and error recovery
@@ -5746,25 +5795,42 @@ def refresh_dashboard(n_intervals, timer_disabled, symbol, tf, start_clicks, sto
                             rr_txt = f"{(numer/denom):.2f} (plan)"
         except Exception:
             rr_txt = "—"
+
+        # --- AI-driven policy (Hybrid mode): dynamic thresholds with minimal hard guards ---
+        rr_plan_val = None
+        try:
+            if action in ("BUY","SELL"):
+                side_plan2 = "long" if action == "BUY" else "short"
+                _tp2, _sl2, _rr2 = derive_tp_sl_mtf(di, hti, side_plan2, tf)
+                rr_plan_val = _rr2
+        except Exception:
+            rr_plan_val = None
+
+        ap = atr_percent(di)
+        adx_val = float(di.iloc[-1].get("adx", np.nan)) if "adx" in di.columns else None
+        policy = ai_trade_policy(symbol, tf, di, htf_bias, p_up, ap, adx_val, near_sup_atr, near_res_atr, rr_plan_val, news)
+        conf_gate_ai = policy.get("conf_min") if isinstance(policy.get("conf_min"), (int, float)) else None
+        rr_gate_ai   = policy.get("rr_min") if isinstance(policy.get("rr_min"), (int, float)) else None
+        CONF_MIN_EFF = max(CONF_HARD_MIN, int(conf_gate_ai)) if conf_gate_ai is not None else _tf_conf_min(tf)
+        RR_MIN_EFF   = max(RR_HARD_MIN, float(rr_gate_ai))   if rr_gate_ai   is not None else _tf_rr_min(tf)
+        ALLOW_TRADE  = bool(policy.get("allow_trade", True))
     
         # --- Auto-trade logic ---
         # `pos` may have been set from exchange detection above
     
         if allow_trade:
             try:
-                # Dynamic per‑TF gates
-                CONF_MIN = _tf_conf_min(tf)
-                RR_MIN   = _tf_rr_min(tf)
-                if pos is None and conf >= CONF_MIN and action in ("BUY","SELL"):
+                # AI policy gates (hybrid) with minimal hard guards
+                if pos is None and ALLOW_TRADE and conf >= int(CONF_MIN_EFF) and action in ("BUY","SELL"):
                     side = "long" if action == "BUY" else "short"
                     # Enhanced leverage selection & notional sizing with risk management
                     lev_use = choose_leverage(symbol, tf, di)
                     notional = compute_notional_usdt_enhanced(symbol, last_price, di)
                     amt = max(1e-8, notional / max(1e-12, last_price))
                     tp, sl, rr_plan = derive_tp_sl_mtf(di, hti, side, tf)
-                    # Gate on minimum RR so entry is only at strong locations
-                    if rr_plan is None or rr_plan < RR_MIN:
-                        raise Exception(f"RR below {RR_MIN:.2f}:1 threshold; skip entry")
+                    # Gate on minimum RR per AI suggestion with hard guard
+                    if rr_plan is None or float(rr_plan) < float(RR_MIN_EFF):
+                        raise Exception(f"RR below {float(RR_MIN_EFF):.2f}:1 threshold; skip entry")
                     od = place_market_order(symbol, side, amt, reduce_only=False, lev=lev_use)
                     if od.get("status") != "error":
                         r0 = abs(float(last_price) - float(sl))
